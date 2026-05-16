@@ -1,0 +1,20 @@
+curl -X POST https://edna-chasmic-unreasonably.ngrok-free.dev/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"ouledmeriemfarouk1@gmail.com","password":"artoriastm"}'
+
+
+{"user":{"id":1,"email":"ouledmeriemfarouk1@gmail.com","language":"en"},"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImlhdCI6MTc3ODc5NTA4OSwiZXhwIjoxNzc5Mzk5ODg5fQ.jErn6Wqa8bJEchjaUnFjQ-dU7cB6f19pWCHdf3JEBJM"}
+
+
+
+curl -X GET http://localhost:3000/api/controls/led/status \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImlhdCI6MTc3ODc5NTA4OSwiZXhwIjoxNzc5Mzk5ODg5fQ.jErn6Wqa8bJEchjaUnFjQ-dU7cB6f19pWCHdf3JEBJM"
+
+curl -X GET http://localhost:3000/api/controls/buzzer/status \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImlhdCI6MTc3ODc5NTA4OSwiZXhwIjoxNzc5Mzk5ODg5fQ.jErn6Wqa8bJEchjaUnFjQ-dU7cB6f19pWCHdf3JEBJM"
+
+  
+
+curl -X POST http://localhost:3000/api/sensor/image \
+  -F "image=@1.jpg" \
+  -F "userId=1"

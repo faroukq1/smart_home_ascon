@@ -1,0 +1,81 @@
+hey Anwar, here is everything you need to connect the ESP32 to the server.
+
+================================================================
+STEP 1 — LOGIN (get your token and userId)
+================================================================
+
+Send this HTTP request:
+
+  Method : POST
+  URL    : https://edna-chasmic-unreasonably.ngrok-free.dev/api/auth/login
+  Header : Content-Type: application/json
+  Body   :
+    {
+      "email": "ouledmeriemfarouk1@gmail.com",
+      "password": "artoriastm"
+    }
+
+You will get back:
+    {
+      "user": {
+        "id": 1           <-- save this, it is your USER_ID
+      },
+      "token": "eyJ..."   <-- save this, it is your JWT TOKEN
+    }
+
+
+================================================================
+STEP 2 — SEND PICTURE FROM THE ESP32-CAM
+================================================================
+
+No token needed for this one.
+
+  Method       : POST
+  URL          : https://edna-chasmic-unreasonably.ngrok-free.dev/api/sensor/image
+  Content-Type : multipart/form-data
+  Fields       :
+    image  = the photo file (JPEG)
+    userId = 1  (the id you got from login)
+
+The server will save the photo and send a push notification
+to the phone automatically.
+
+
+================================================================
+STEP 3 — CHECK IF THE FLASH IS ON OR OFF
+================================================================
+
+  Method : GET
+  URL    : https://edna-chasmic-unreasonably.ngrok-free.dev/api/controls/led/status
+  Header : Authorization: Bearer <YOUR_TOKEN>
+
+Response:
+  true  → flash is ON,  turn it on
+  false → flash is OFF, turn it off
+
+
+================================================================
+STEP 4 — CHECK IF THE BUZZER IS ON OR OFF
+================================================================
+
+  Method : GET
+  URL    : https://edna-chasmic-unreasonably.ngrok-free.dev/api/controls/buzzer/status
+  Header : Authorization: Bearer <YOUR_TOKEN>
+
+Response:
+  true  → buzzer is ON,  activate it
+  false → buzzer is OFF, deactivate it
+
+
+================================================================
+IMPORTANT NOTES
+================================================================
+
+- The token you get from login goes in the header like this:
+    Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+- Only the photo upload (Step 2) does NOT need the token.
+  Everything else needs it.
+
+- If the URL stops working, ask Farouk for the new ngrok link.
+================================================================

@@ -1,0 +1,65 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int     @id @default(autoincrement())
+  email     String  @unique
+  password  String
+  language  String  @default("en")
+  expoPushToken String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  notifications Notification[]
+  controls      Control[]
+}
+
+model Notification {
+  id        Int     @id @default(autoincrement())
+  userId    Int
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  type      String  // "alarm" or "control"
+  status    String  // encrypted or raw value
+  date      String
+  time      String
+  imageKey  String? // stored image filename for this alert
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model Control {
+  id        Int     @id @default(autoincrement())
+  userId    Int
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  type      String  // "led", "buzzer", "capture"
+  action    String  // "on", "off", "triggered"
+  date      String
+  time      String
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model SensorStatus {
+  id        Int     @id @default(autoincrement())
+  status    String  @default("0") // "0" for connected, "1" for motion detected
+  lastImageUrl String? // legacy URL for last captured image
+  lastImageKey String? // stored image filename for last capture
+  updatedAt DateTime @updatedAt
+}

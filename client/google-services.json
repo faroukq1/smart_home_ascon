@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "853320503046",
+    "project_id": "ascon-794fc",
+    "storage_bucket": "ascon-794fc.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:853320503046:android:9c66241bdf1b3723f65887",
+        "android_client_info": {
+          "package_name": "smart.home.ascon"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBgfka9Zv-xw_4pgD2afXBq-9ByF5Ox0GQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
