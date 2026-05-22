@@ -9,6 +9,8 @@ router.post("/led", authMiddleware, controlController.toggleLED);
 router.post("/buzzer", authMiddleware, controlController.toggleBuzzer);
 router.get("/led/status", authMiddleware, controlController.getLedStatus);
 router.get("/buzzer/status", authMiddleware, controlController.getBuzzerStatus);
+router.get("/system/status", authMiddleware, controlController.getSystemStatus);
+router.post("/system", authMiddleware, controlController.toggleSystem);
 router.post("/capture", authMiddleware, controlController.captureImage);
 router.get("/history", authMiddleware, controlController.getControlHistory);
 router.delete("/", authMiddleware, controlController.clearControlHistory);

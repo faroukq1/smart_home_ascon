@@ -17,19 +17,23 @@ export default function ControlScreen() {
   const { t } = useTranslation();
   const [ledState, setLedState] = useState(false);
   const [buzzerState, setBuzzerState] = useState(false);
+  const [systemState, setSystemState] = useState(false);
   const [loadingLed, setLoadingLed] = useState(false);
   const [loadingBuzzer, setLoadingBuzzer] = useState(false);
+  const [loadingSystem, setLoadingSystem] = useState(false);
   const [initializing, setInitializing] = useState(true);
 
   useEffect(() => {
     const loadInitialState = async () => {
       try {
-        const [ledRes, buzzerRes] = await Promise.all([
+        const [ledRes, buzzerRes, systemRes] = await Promise.all([
           controlAPI.getLedStatus(),
           controlAPI.getBuzzerStatus(),
+          controlAPI.getSystemStatus(),
         ]);
         setLedState(!!ledRes.data);
         setBuzzerState(!!buzzerRes.data);
+        setSystemState(!!systemRes.data);
       } catch (error: any) {
         if (error?.response?.status !== 401) {
           console.warn("Could not load device state:", error?.message);
@@ -75,6 +79,23 @@ export default function ControlScreen() {
     }
   };
 
+  const handleToggleSystem = async () => {
+    setLoadingSystem(true);
+    try {
+      const newState = !systemState;
+      await controlAPI.toggleSystem(newState);
+      setSystemState(newState);
+    } catch (error: any) {
+      if (!error?.response) {
+        Alert.alert(t("error"), t("network_error"));
+      } else {
+        Alert.alert(t("error"), error?.response?.data?.error || t("system_toggle_failed"));
+      }
+    } finally {
+      setLoadingSystem(false);
+    }
+  };
+
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <View style={styles.header}>
@@ -89,6 +110,16 @@ export default function ControlScreen() {
           </View>
         ) : (
           <>
+            {/* System On/Off */}
+            <SystemSwitch
+              state={systemState}
+              loading={loadingSystem}
+              onToggle={handleToggleSystem}
+              label={t("system_power")}
+            />
+
+            <View style={styles.spacer} />
+
             {/* LED Control */}
             <ControlSwitch
               icon="flashlight-on"
@@ -116,6 +147,38 @@ export default function ControlScreen() {
     </ScrollView>
   );
 }
+
+const SystemSwitch = ({ state, loading, onToggle, label }: any) => (
+  <TouchableOpacity
+    style={[styles.systemItem, state ? styles.systemItemOn : styles.systemItemOff]}
+    onPress={onToggle}
+    disabled={loading}
+  >
+    <View style={styles.controlLeft}>
+      <MaterialIcons
+        name="power-settings-new"
+        size={28}
+        color={state ? "#fff" : COLORS.textSecondary}
+      />
+      <View style={{ marginLeft: SPACING.md }}>
+        <Text style={[styles.systemLabel, state && styles.systemLabelOn]}>{label}</Text>
+        <Text style={[styles.systemStatus, state && styles.systemStatusOn]}>
+          {state ? "ON" : "OFF"}
+        </Text>
+      </View>
+    </View>
+
+    <View style={styles.toggleContainer}>
+      {loading ? (
+        <ActivityIndicator size="small" color={state ? "#fff" : COLORS.primary} />
+      ) : (
+        <View style={[styles.toggleBg, state && styles.toggleBgActive]}>
+          <View style={[styles.toggleDot, state && styles.toggleDotActive]} />
+        </View>
+      )}
+    </View>
+  </TouchableOpacity>
+);
 
 const ControlSwitch = ({ icon, label, state, loading, onToggle }: any) => (
   <TouchableOpacity
@@ -229,5 +292,37 @@ const styles = StyleSheet.create({
   },
   toggleDotActive: {
     alignSelf: "flex-end",
+  },
+  systemItem: {
+    borderRadius: BORDER_RADIUS.lg,
+    borderWidth: 1,
+    padding: SPACING.lg,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  systemItemOn: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  systemItemOff: {
+    backgroundColor: COLORS.surface,
+    borderColor: `${COLORS.text}1A`,
+  },
+  systemLabel: {
+    fontSize: FONTS.sizes.base,
+    fontWeight: FONTS.weights.bold,
+    color: COLORS.text,
+  },
+  systemLabelOn: {
+    color: "#fff",
+  },
+  systemStatus: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textSecondary,
+    marginTop: 2,
+  },
+  systemStatusOn: {
+    color: "rgba(255,255,255,0.8)",
   },
 });

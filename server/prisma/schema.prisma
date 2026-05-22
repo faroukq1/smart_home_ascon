@@ -61,5 +61,6 @@ model SensorStatus {
   status    String  @default("0") // "0" for connected, "1" for motion detected
   lastImageUrl String? // legacy URL for last captured image
   lastImageKey String? // stored image filename for last capture
+  systemEnabled Boolean @default(false)
   updatedAt DateTime @updatedAt
 }

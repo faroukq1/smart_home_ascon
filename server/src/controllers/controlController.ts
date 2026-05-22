@@ -166,3 +166,45 @@ export const getBuzzerStatus = async (req: AuthRequest, res: Response) => {
     res.status(500).json({ error: "Failed to fetch buzzer status" });
   }
 };
+
+export const getSystemStatus = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const sensor = await prisma.sensorStatus.findUnique({ where: { id: 1 } });
+    res.json(sensor?.systemEnabled ?? false);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch system status" });
+  }
+};
+
+export const toggleSystem = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    const { state } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const systemEnabled = !!state;
+    const action = systemEnabled ? "on" : "off";
+    const { time, date } = getCurrentTime();
+
+    await prisma.sensorStatus.upsert({
+      where: { id: 1 },
+      update: { systemEnabled },
+      create: { systemEnabled },
+    });
+
+    await prisma.control.create({
+      data: { userId, type: "system", action, date, time },
+    });
+
+    res.json({ success: true, systemEnabled });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to toggle system" });
+  }
+};

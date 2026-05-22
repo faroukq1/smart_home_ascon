@@ -81,6 +81,8 @@ const translations = {
     logout_failed: "Failed to logout",
     led_toggle_failed: "Failed to toggle flashlight",
     buzzer_toggle_failed: "Failed to toggle buzzer",
+    system_power: "System Power",
+    system_toggle_failed: "Failed to toggle system",
   },
   ar: {
     welcome: "مرحباً بك في",
@@ -161,6 +163,8 @@ const translations = {
     logout_failed: "فشل تسجيل الخروج",
     led_toggle_failed: "فشل تشغيل/إيقاف الكشاف",
     buzzer_toggle_failed: "فشل تشغيل/إيقاف الجرس",
+    system_power: "طاقة النظام",
+    system_toggle_failed: "فشل تشغيل/إيقاف النظام",
   },
   fr: {
     welcome: "Bienvenue sur",
@@ -241,6 +245,8 @@ const translations = {
     logout_failed: "Échec de la déconnexion",
     led_toggle_failed: "Échec de basculement de la lampe",
     buzzer_toggle_failed: "Échec de basculement du buzzer",
+    system_power: "Alimentation système",
+    system_toggle_failed: "Échec du basculement du système",
   },
 };
 

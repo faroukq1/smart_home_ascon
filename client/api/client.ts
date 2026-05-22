@@ -109,6 +109,10 @@ export const controlAPI = {
 
   getBuzzerStatus: () => client.get("/controls/buzzer/status"),
 
+  getSystemStatus: () => client.get("/controls/system/status"),
+
+  toggleSystem: (state: boolean) => client.post("/controls/system", { state }),
+
   captureImage: () => client.post("/controls/capture"),
 
   getHistory: (limit: number = 50) =>
