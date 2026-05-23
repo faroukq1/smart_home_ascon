@@ -1,0 +1,544 @@
+#include "esp_camera.h"
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
+
+// ==========================================
+// 1. HARDWARE CONFIGURATION
+// ==========================================
+#define PWDN_GPIO_NUM     32
+#define RESET_GPIO_NUM    -1
+#define XCLK_GPIO_NUM      0
+#define SIOD_GPIO_NUM     26
+#define SIOC_GPIO_NUM     27
+#define Y9_GPIO_NUM       35
+#define Y8_GPIO_NUM       34
+#define Y7_GPIO_NUM       39
+#define Y6_GPIO_NUM       36
+#define Y5_GPIO_NUM       21
+#define Y4_GPIO_NUM       19
+#define Y3_GPIO_NUM       18
+#define Y2_GPIO_NUM        5
+#define VSYNC_GPIO_NUM    25
+#define HREF_GPIO_NUM     23
+#define PCLK_GPIO_NUM     22
+
+#define PIR_PIN           13
+#define BUZZER_PIN        12
+#define FLASH_LED_PIN      4
+#define CONTROL_LED_PIN    2
+
+// ==========================================
+// 2. NETWORK & SERVER
+// ==========================================
+const char* ssid     = "nbx";
+const char* password = "12345678";
+
+const String serverUrl = "https://edna-chasmic-unreasonably.ngrok-free.dev";
+
+// ==========================================
+// 3. STATE VARIABLES
+// ==========================================
+String jwtToken      = "";
+int    userId        = -1;
+bool   serverOnline  = false;
+bool   systemEnabled = false;
+
+unsigned long lastControlCheck    = 0;
+unsigned long lastHealthCheck     = 0;
+unsigned long lastSystemCheck     = 0;
+unsigned long lastWiFiBlink       = 0;
+unsigned long motionCooldownStart = 0;
+unsigned long flashOnTimestamp    = 0;
+
+const unsigned long healthCheckInterval    = 60000;
+const unsigned long systemCheckInterval    = 3000;
+const unsigned long controlInterval        = 5000;
+const unsigned long motionCooldownInterval = 10000;
+const unsigned long flashWarmupTime        = 250;
+const unsigned long wifiBlinkInterval      = 250;
+
+bool inMotionCooldown = false;
+bool wifiLedState     = LOW;
+bool httpBusy         = false;
+
+#define MAX_RETRIES 3
+
+enum FlashCaptureState { IDLE, FLASH_ON };
+FlashCaptureState currentCaptureState = IDLE;
+
+// ==========================================
+// FUNCTION DECLARATIONS
+// ==========================================
+bool connectToWiFi();
+bool ensureWiFi();
+bool checkServerHealth();
+bool loginToServer();
+bool ensureAuth();
+void checkSystemStatus();
+void checkLedStatus();
+void checkBuzzerStatus();
+void handleFlashAndCapture();
+void sendCapturedImage(camera_fb_t* fb);
+
+// ==========================================
+// SETUP
+// ==========================================
+void setup() {
+  Serial.begin(115200);
+  Serial.setDebugOutput(false);
+  Serial.println();
+
+  pinMode(PIR_PIN, INPUT);
+  pinMode(FLASH_LED_PIN, OUTPUT);
+  pinMode(CONTROL_LED_PIN, OUTPUT);
+  noTone(BUZZER_PIN);
+  digitalWrite(FLASH_LED_PIN, LOW);
+  digitalWrite(CONTROL_LED_PIN, LOW);
+
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer   = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM; config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM; config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM; config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM; config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk     = XCLK_GPIO_NUM;
+  config.pin_pclk     = PCLK_GPIO_NUM;
+  config.pin_vsync    = VSYNC_GPIO_NUM;
+  config.pin_href     = HREF_GPIO_NUM;
+  config.pin_sscb_sda = SIOD_GPIO_NUM;
+  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn     = PWDN_GPIO_NUM;
+  config.pin_reset    = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+
+  if (psramFound()) {
+    config.frame_size   = FRAMESIZE_UXGA;
+    config.jpeg_quality = 10;
+    config.fb_count     = 2;
+  } else {
+    config.frame_size   = FRAMESIZE_SVGA;
+    config.jpeg_quality = 12;
+    config.fb_count     = 1;
+  }
+
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("[Cam] Init failed: 0x%x\n", err);
+    return;
+  }
+  Serial.println("[Cam] Ready ✓");
+
+  if (connectToWiFi()) {
+    serverOnline    = checkServerHealth();
+    lastHealthCheck = millis();
+    if (serverOnline) {
+      if (loginToServer()) {
+        checkSystemStatus();
+      }
+      lastSystemCheck = millis();
+    }
+  }
+}
+
+// ==========================================
+// LOOP
+// ==========================================
+void loop() {
+  if (!ensureWiFi()) {
+    delay(1000);
+    return;
+  }
+
+  unsigned long now = millis();
+
+  // 1. Health re-check every 60s
+  if (now - lastHealthCheck >= healthCheckInterval) {
+    if (!httpBusy) {
+      serverOnline    = checkServerHealth();
+      lastHealthCheck = now;
+      if (serverOnline && jwtToken == "") loginToServer();
+    }
+  }
+
+  // 2. System on/off check every 3s
+  if (now - lastSystemCheck >= systemCheckInterval) {
+    lastSystemCheck = now;
+    if (serverOnline && jwtToken != "" && !httpBusy) {
+      checkSystemStatus();
+    }
+  }
+
+  // 3. System DISABLED → silence everything
+  if (!systemEnabled) {
+    digitalWrite(FLASH_LED_PIN, LOW);
+    digitalWrite(CONTROL_LED_PIN, LOW);
+    noTone(BUZZER_PIN);
+    currentCaptureState = IDLE;
+    delay(100);
+    return;
+  }
+
+  // ── SYSTEM ENABLED ──
+
+  // 4. Motion cooldown
+  if (inMotionCooldown && (now - motionCooldownStart >= motionCooldownInterval)) {
+    inMotionCooldown = false;
+    Serial.println("[PIR] Cooldown ended, ready");
+  }
+
+  // 5. PIR trigger
+  if (digitalRead(PIR_PIN) == HIGH && !inMotionCooldown && currentCaptureState == IDLE) {
+    if (!serverOnline) {
+      Serial.println("[PIR] Motion — server offline, skipping");
+    } else if (jwtToken == "") {
+      Serial.println("[PIR] Motion — not authenticated, skipping");
+    } else {
+      Serial.println("[PIR] Motion detected! Flash ON...");
+      digitalWrite(FLASH_LED_PIN, HIGH);
+      flashOnTimestamp    = millis();
+      currentCaptureState = FLASH_ON;
+    }
+    motionCooldownStart = millis();
+    inMotionCooldown    = true;
+  }
+
+  // 6. Non-blocking flash + capture
+  handleFlashAndCapture();
+
+  // 7. Poll LED & Buzzer every 5s
+  if (now - lastControlCheck >= controlInterval) {
+    lastControlCheck = now;
+    if (serverOnline && jwtToken != "" && !httpBusy) {
+      checkLedStatus();
+      checkBuzzerStatus();
+    }
+  }
+}
+
+// ==========================================
+// WIFI
+// ==========================================
+bool connectToWiFi() {
+  Serial.print("[WiFi] Connecting");
+  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, IPAddress(8, 8, 8, 8));
+  WiFi.begin(ssid, password);
+  int attempts = 0;
+
+  while (WiFi.status() != WL_CONNECTED && attempts < 40) {
+    unsigned long now = millis();
+    if (now - lastWiFiBlink >= wifiBlinkInterval) {
+      lastWiFiBlink = now;
+      wifiLedState  = !wifiLedState;
+      digitalWrite(FLASH_LED_PIN, wifiLedState);
+      Serial.print(".");
+      attempts++;
+    }
+  }
+
+  digitalWrite(FLASH_LED_PIN, LOW);
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n[WiFi] Connected ✓");
+    Serial.printf("[WiFi] IP: %s | DNS: %s\n",
+      WiFi.localIP().toString().c_str(),
+      WiFi.dnsIP().toString().c_str());
+    return true;
+  }
+
+  Serial.println("\n[WiFi] Failed ✗");
+  return false;
+}
+
+bool ensureWiFi() {
+  if (WiFi.status() == WL_CONNECTED) return true;
+  Serial.println("[WiFi] Lost — reconnecting...");
+  WiFi.disconnect();
+  return connectToWiFi();
+}
+
+// ==========================================
+// HEALTH CHECK
+// ==========================================
+bool checkServerHealth() {
+  Serial.println("[Health] Checking...");
+  httpBusy = true;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, serverUrl + "/health");
+  http.setTimeout(20000);
+  http.addHeader("ngrok-skip-browser-warning", "true");
+
+  int code = http.GET();
+  http.end();
+  httpBusy = false;
+
+  if (code == 200) {
+    Serial.println("[Health] UP ✓");
+    return true;
+  }
+  Serial.printf("[Health] DOWN — HTTP %d ✗\n", code);
+  return false;
+}
+
+// ==========================================
+// AUTH
+// ==========================================
+bool loginToServer() {
+  Serial.println("[Auth] Logging in...");
+  httpBusy = true;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, serverUrl + "/api/auth/login");
+  http.setTimeout(20000);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("ngrok-skip-browser-warning", "true");
+
+  StaticJsonDocument<200> doc;
+  doc["email"]    = "ouledmeriemfarouk1@gmail.com";
+  doc["password"] = "artoriastm";
+  String body;
+  serializeJson(doc, body);
+
+  int code = http.POST(body);
+
+  if (code == 200) {
+    String response = http.getString();
+    http.end();
+    httpBusy = false;
+
+    StaticJsonDocument<1024> res;
+    if (!deserializeJson(res, response)) {
+      userId   = res["user"]["id"];
+      jwtToken = String((const char*)res["token"]);
+      Serial.printf("[Auth] OK ✓ — UserID: %d\n", userId);
+      return true;
+    }
+  }
+
+  http.end();
+  httpBusy = false;
+  Serial.printf("[Auth] Failed — HTTP %d ✗\n", code);
+  return false;
+}
+
+bool ensureAuth() {
+  if (jwtToken != "") return true;
+  return loginToServer();
+}
+
+// ==========================================
+// SYSTEM ON/OFF  — returns plain "true"/"false"
+// ==========================================
+void checkSystemStatus() {
+  httpBusy = true;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, serverUrl + "/api/controls/system/status");
+  http.setTimeout(15000);
+  http.addHeader("Authorization", "Bearer " + jwtToken);
+  http.addHeader("ngrok-skip-browser-warning", "true");
+
+  int code = http.GET();
+
+  if (code == 200) {
+    String response = http.getString();
+    http.end();
+    httpBusy = false;
+
+    response.trim();  // response is plain "true" or "false"
+    bool newState = (response == "true");
+
+    if (newState != systemEnabled) {
+      systemEnabled = newState;
+      Serial.printf("[System] → %s\n", systemEnabled ? "ENABLED ✓" : "DISABLED ✗");
+    }
+
+  } else if (code == 401) {
+    http.end();
+    httpBusy = false;
+    Serial.println("[System] 401 — re-login");
+    jwtToken = "";
+    loginToServer();
+
+  } else {
+    http.end();
+    httpBusy = false;
+    Serial.printf("[System] Failed — HTTP %d\n", code);
+
+    if (code == -1) {
+      static int failCount = 0;
+      failCount++;
+      if (failCount >= 5) {
+        Serial.println("[System] 5 failures — re-checking health");
+        serverOnline = checkServerHealth();
+        if (serverOnline && jwtToken == "") loginToServer();
+        failCount = 0;
+      }
+    }
+  }
+}
+
+// ==========================================
+// FLASH & CAPTURE
+// ==========================================
+void handleFlashAndCapture() {
+  if (currentCaptureState != FLASH_ON) return;
+  if (millis() - flashOnTimestamp < flashWarmupTime) return;
+
+  camera_fb_t* fb = esp_camera_fb_get();
+  digitalWrite(FLASH_LED_PIN, LOW);
+  currentCaptureState = IDLE;
+
+  if (!fb) {
+    Serial.println("[Cam] Capture failed ✗");
+    return;
+  }
+
+  Serial.printf("[Cam] Captured %d bytes\n", fb->len);
+  sendCapturedImage(fb);
+}
+
+// ==========================================
+// SEND IMAGE
+// ==========================================
+void sendCapturedImage(camera_fb_t* fb) {
+  if (!ensureAuth()) {
+    Serial.println("[Send] No auth — aborting");
+    esp_camera_fb_return(fb);
+    return;
+  }
+
+  String boundary   = "--------------------------ESP32CamBoundary";
+  String textPart   = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"userId\"\r\n\r\n" + String(userId) + "\r\n";
+  String fileHeader = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"capture.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
+  String endBound   = "\r\n--" + boundary + "--\r\n";
+
+  size_t totalLen = textPart.length() + fileHeader.length() + fb->len + endBound.length();
+  uint8_t* buf = (uint8_t*)malloc(totalLen);
+
+  if (!buf) {
+    Serial.println("[Mem] Alloc failed ✗");
+    esp_camera_fb_return(fb);
+    return;
+  }
+
+  size_t idx = 0;
+  memcpy(buf + idx, textPart.c_str(),   textPart.length());   idx += textPart.length();
+  memcpy(buf + idx, fileHeader.c_str(), fileHeader.length()); idx += fileHeader.length();
+  memcpy(buf + idx, fb->buf,            fb->len);             idx += fb->len;
+  memcpy(buf + idx, endBound.c_str(),   endBound.length());
+  esp_camera_fb_return(fb);
+
+  bool success = false;
+  httpBusy = true;
+
+  for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    Serial.printf("[HTTP] Upload %d/%d...\n", attempt, MAX_RETRIES);
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    http.begin(client, serverUrl + "/api/sensor/image");
+    http.setTimeout(30000);
+    http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
+    http.addHeader("Authorization", "Bearer " + jwtToken);
+    http.addHeader("ngrok-skip-browser-warning", "true");
+
+    int code = http.POST(buf, totalLen);
+
+    if (code == 200 || code == 201) {
+      Serial.printf("[HTTP] Upload OK ✓ — %d\n", code);
+      Serial.println("[HTTP] " + http.getString());
+      success = true;
+      http.end();
+      break;
+
+    } else if (code == 401) {
+      http.end();
+      Serial.println("[Auth] Token expired — re-login");
+      jwtToken = "";
+      if (!loginToServer()) break;
+
+    } else {
+      Serial.printf("[HTTP] Failed %d: %s\n", code, http.errorToString(code).c_str());
+      http.end();
+      if (attempt < MAX_RETRIES) {
+        Serial.println("[HTTP] Retrying in 2s...");
+        delay(2000);
+      }
+    }
+  }
+
+  httpBusy = false;
+  if (!success) {
+    Serial.println("[HTTP] All retries failed — server offline");
+    serverOnline = false;
+  }
+
+  free(buf);
+}
+
+// ==========================================
+// CONTROLS — also return plain "true"/"false"
+// ==========================================
+void checkLedStatus() {
+  httpBusy = true;
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, serverUrl + "/api/controls/led/status");
+  http.setTimeout(10000);
+  http.addHeader("Authorization", "Bearer " + jwtToken);
+  http.addHeader("ngrok-skip-browser-warning", "true");
+
+  int code = http.GET();
+  if (code == 200) {
+    String res = http.getString();
+    res.trim();
+    bool on = (res == "true");
+    digitalWrite(CONTROL_LED_PIN, on ? HIGH : LOW);
+    Serial.printf("[LED] %s\n", on ? "ON" : "OFF");
+  } else if (code == 401) {
+    jwtToken = "";
+  } else {
+    Serial.printf("[LED] Failed — HTTP %d\n", code);
+  }
+  http.end();
+  httpBusy = false;
+}
+
+void checkBuzzerStatus() {
+  httpBusy = true;
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, serverUrl + "/api/controls/buzzer/status");
+  http.setTimeout(10000);
+  http.addHeader("Authorization", "Bearer " + jwtToken);
+  http.addHeader("ngrok-skip-browser-warning", "true");
+
+  int code = http.GET();
+  if (code == 200) {
+    String res = http.getString();
+    res.trim();
+    bool on = (res == "true");
+    if (on) { tone(BUZZER_PIN, 1000); Serial.println("[Buzzer] ACTIVE");   }
+    else    { noTone(BUZZER_PIN);     Serial.println("[Buzzer] INACTIVE"); }
+  } else if (code == 401) {
+    jwtToken = "";
+  } else {
+    Serial.printf("[Buzzer] Failed — HTTP %d\n", code);
+  }
+  http.end();
+  httpBusy = false;
+}
